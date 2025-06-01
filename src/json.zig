@@ -65,7 +65,10 @@ fn tokenize(allocator: std.mem.Allocator, file: std.fs.File) !std.ArrayList([]u8
     var current_token = std.ArrayList(u8).init(allocator);
     defer current_token.deinit();
 
-    var in_string = false;
+    var current_line: u32 = 1;
+    var in_string: bool = false;
+    var string_start_location: u32 = undefined;
+
     var b_last: u8 = 0;
     var b = try reader.readByte();
     while (b > 0) : ({
@@ -75,6 +78,7 @@ fn tokenize(allocator: std.mem.Allocator, file: std.fs.File) !std.ArrayList([]u8
         // Start of string
         if (!in_string and b == '"') {
             in_string = true;
+            string_start_location = current_line;
 
             try advanceToken(allocator, &current_token, &tokens);
 
@@ -102,6 +106,8 @@ fn tokenize(allocator: std.mem.Allocator, file: std.fs.File) !std.ArrayList([]u8
         // Whitespace is not stored in the token list.
         if (std.ascii.isWhitespace(b)) {
             try advanceToken(allocator, &current_token, &tokens);
+            if (b == '\n')
+                current_line += 1;
             continue;
         }
 
@@ -115,6 +121,17 @@ fn tokenize(allocator: std.mem.Allocator, file: std.fs.File) !std.ArrayList([]u8
 
         // At this stage, the token must be a non-string primitive.
         try current_token.append(b);
+    }
+
+    // We should not be in a string at this point.
+    // If we are, the JSON is invalid.
+    if (in_string) {
+        try std.io.getStdErr().writer().print(
+            "Parse Error: Unclosed string beginning on line {d}\n",
+            .{string_start_location},
+        );
+
+        return JsonError.UnclosedString;
     }
 
     return tokens;
@@ -183,6 +200,10 @@ fn printJsonHelper(json: JsonValue, prefix: []const u8, writer: std.io.AnyWriter
         .primitive => |_| {},
     }
 }
+
+const JsonError = error {
+    UnclosedString,
+};
 
 test "parse all test files" {
     const allocator = std.testing.allocator;
