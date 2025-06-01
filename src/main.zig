@@ -15,6 +15,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     const file = try std.fs.cwd().openFile(file_name, .{});
+    defer file.close();
 
     var parsed_json = try json.parseFile(allocator, file);
     defer parsed_json.deinit();
