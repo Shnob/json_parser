@@ -238,10 +238,10 @@ fn addToTokenBuilder(token_builder: *std.ArrayList(u8), b: u8, state: *Tokenizer
 }
 
 /// Print out JSON in human-readable format.
-pub fn printJson(json: JsonValue) !void {
-    const stdout = std.io.getStdOut().writer().any();
+pub fn printJson(json: JsonValue, stream: std.fs.File) !void {
+    const writer = stream.writer().any();
 
-    try printJsonHelper(json, "", stdout);
+    try printJsonHelper(json, "", writer);
 }
 
 fn printJsonHelper(json: JsonValue, prefix: []const u8, writer: std.io.AnyWriter) !void {
@@ -275,7 +275,21 @@ fn printJsonHelper(json: JsonValue, prefix: []const u8, writer: std.io.AnyWriter
 
 const JsonError = error {
     UnclosedString,
+    NameSeparatorInArray,
+    NoNameInObject,
 };
+
+test "parse example json" {
+    const allocator = std.testing.allocator;
+
+    const file = try std.fs.cwd().openFile("example.json", .{});
+    defer file.close();
+
+    var json = try parseFile(allocator, file);
+    defer json.deinit();
+
+    try printJson(json.root, std.io.getStdErr());
+}
 
 test "parse all test files" {
     const allocator = std.testing.allocator;
@@ -283,7 +297,11 @@ test "parse all test files" {
     const test_dir = try std.fs.cwd().openDir("test", .{ .iterate = true });
     var test_files = test_dir.iterate();
 
+    var total_tests: u32 = 0;
+    var incorrect_tests: u32 = 0;
+
     while (try test_files.next()) |entry| {
+        total_tests += 1;
         std.debug.print("file: {s}\n", .{entry.name});
 
         const should_pass = std.mem.eql(u8, entry.name[0..4], "pass");
@@ -293,10 +311,23 @@ test "parse all test files" {
         const result = parseFile(allocator, file);
 
         if (should_pass) {
-            var json_result = try result;
-            defer json_result.deinit();
+            var good_result = result catch {
+                // Failed when should have passed.
+                incorrect_tests += 1;
+                continue;
+            };
+            defer good_result.deinit();
         } else {
-            _ = std.testing.expectError(anyerror, result);
+            var good_result = result catch {
+                continue;
+            };
+            // Passed when should have failed.
+            incorrect_tests += 1;
+            defer good_result.deinit();
         }
     }
+
+    std.debug.print("Parse all test files results:\n", .{});
+    std.debug.print("  correct: {d}/{d}\n", .{total_tests - incorrect_tests, total_tests});
+    try std.testing.expectEqual(0, incorrect_tests);
 }

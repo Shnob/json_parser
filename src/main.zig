@@ -20,5 +20,5 @@ pub fn main() !void {
     var parsed_json = try json.parseFile(allocator, file);
     defer parsed_json.deinit();
 
-    try json.printJson(parsed_json.root);
+    try json.printJson(parsed_json.root, std.io.getStdOut());
 }
