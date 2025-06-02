@@ -42,7 +42,7 @@ pub fn parseFile(allocator: std.mem.Allocator, file: std.fs.File) !Json {
     // Tokenize file into a more useful form.
     const tokens = try tokenize(aa_allocator, file);
     for (tokens.items) |item| {
-        std.debug.print("token: {s}\n", .{item});
+        std.debug.print("token: {any}\n", .{item});
     }
 
     // TODO: This is temporary to make the compiler happy.
@@ -55,68 +55,124 @@ pub fn parseFile(allocator: std.mem.Allocator, file: std.fs.File) !Json {
     };
 }
 
-fn tokenize(allocator: std.mem.Allocator, file: std.fs.File) !std.ArrayList([]u8) {
+const Token = struct {
+    token_type: TokenType,
+    value: []const u8,
+    line: u32,
+    column: u32,
+
+    const TokenType = enum {
+        begin_array,
+        begin_object,
+        end_array,
+        end_object,
+        name_separator,
+        value_separator,
+        string_literal,
+        null_literal,
+        bool_literal,
+        number_literal,
+
+        fn getTokenType(value: []const u8) TokenType {
+            switch (value[0]) {
+                '[' => return TokenType.begin_array,
+                '{' => return TokenType.begin_object,
+                ']' => return TokenType.end_array,
+                '}' => return TokenType.end_object,
+                ':' => return TokenType.name_separator,
+                ',' => return TokenType.value_separator,
+                '"' => return TokenType.string_literal,
+                'n' => return TokenType.null_literal,
+                't', 'f' => return TokenType.bool_literal,
+                else => return TokenType.number_literal,
+            }
+        }
+    };
+
+    fn init(value: []const u8, tokenizer_state: TokenizerState) Token {
+        const token_type = TokenType.getTokenType(value);
+
+        return Token{
+            .token_type = token_type,
+            .value = value,
+            .line = tokenizer_state.token_start_line,
+            .column = tokenizer_state.token_start_column,
+        };
+    }
+};
+
+const TokenizerState = struct {
+    line: u32 = 1,
+    column: u32 = 1,
+    in_string: bool = false,
+    token_start_line: u32 = 1,
+    token_start_column: u32 = 1,
+};
+
+fn tokenize(allocator: std.mem.Allocator, file: std.fs.File) !std.ArrayList(Token) {
     var br = std.io.bufferedReader(file.reader());
     const reader = br.reader();
 
-    var tokens = std.ArrayList([]u8).init(allocator);
+    var tokens = std.ArrayList(Token).init(allocator);
 
     // Token stored as ArrayList so that building is efficient.
     var current_token = std.ArrayList(u8).init(allocator);
     defer current_token.deinit();
 
-    var current_line: u32 = 1;
-    var in_string: bool = false;
-    var string_start_location: u32 = undefined;
+    var state = TokenizerState{};
 
     var b_last: u8 = 0;
     var b = try reader.readByte();
     while (b > 0) : ({
+        state.column += 1;
         b_last = b;
         b = reader.readByte() catch break;
     }) {
+        std.debug.print("b: {c} ({d})\n", .{b, b});
         // Start of string
-        if (!in_string and b == '"') {
-            in_string = true;
-            string_start_location = current_line;
+        if (!state.in_string and b == '"') {
+            state.in_string = true;
 
-            try advanceToken(allocator, &current_token, &tokens);
+            try advanceToken(allocator, &current_token, &tokens, &state);
 
-            try current_token.append(b);
+            try addToTokenBuilder(&current_token, b, &state);
             continue;
         }
 
         // End of string
-        if (in_string and b == '"' and b_last != '\\') {
-            in_string = false;
+        if (state.in_string and b == '"' and b_last != '\\') {
+            state.in_string = false;
 
-            try current_token.append(b);
+            try addToTokenBuilder(&current_token, b, &state);
 
-            try advanceToken(allocator, &current_token, &tokens);
+            try advanceToken(allocator, &current_token, &tokens, &state);
             continue;
         }
 
         // Inside of string
-        if (in_string) {
-            try current_token.append(b);
+        if (state.in_string) {
+            try addToTokenBuilder(&current_token, b, &state);
             continue;
         }
 
         // If whitespace (and not in string), advance token.
         // Whitespace is not stored in the token list.
         if (std.ascii.isWhitespace(b)) {
-            try advanceToken(allocator, &current_token, &tokens);
-            if (b == '\n')
-                current_line += 1;
+            try advanceToken(allocator, &current_token, &tokens, &state);
+            if (b == '\n') {
+                state.line += 1;
+                state.column = 0;
+            }
             continue;
         }
 
         // If we encounter a symbol (outside strings),
         // advance token, store this symbol in new token, and end that token.
         if (isJsonSymbol(b)) {
-            try advanceToken(allocator, &current_token, &tokens);
-            try current_token.append(b);
-            try advanceToken(allocator, &current_token, &tokens);
+            try advanceToken(allocator, &current_token, &tokens, &state);
+            try addToTokenBuilder(&current_token, b, &state);
+            try advanceToken(allocator, &current_token, &tokens, &state);
+            continue;
         }
 
         // At this stage, the token must be a non-string primitive.
@@ -125,10 +181,10 @@ fn tokenize(allocator: std.mem.Allocator, file: std.fs.File) !std.ArrayList([]u8
 
     // We should not be in a string at this point.
     // If we are, the JSON is invalid.
-    if (in_string) {
+    if (state.in_string) {
         try std.io.getStdErr().writer().print(
             "Parse Error: Unclosed string beginning on line {d}\n",
-            .{string_start_location},
+            .{state.token_start_line},
         );
 
         return JsonError.UnclosedString;
@@ -138,14 +194,17 @@ fn tokenize(allocator: std.mem.Allocator, file: std.fs.File) !std.ArrayList([]u8
 }
 
 /// Helper function for tokenize() for storing the current token and setting up for the next.
-fn advanceToken(allocator: std.mem.Allocator, token_builder: *std.ArrayList(u8), tokens: *std.ArrayList([]u8)) !void {
+fn advanceToken(allocator: std.mem.Allocator, token_builder: *std.ArrayList(u8), tokens: *std.ArrayList(Token), state: *TokenizerState) !void {
     if (token_builder.items.len == 0) {
         return;
     }
 
-    const token = try finalizeToken(allocator, token_builder);
+    const token = try finalizeToken(allocator, token_builder, state.*);
     try tokens.append(token);
-    token_builder.clearAndFree();
+    token_builder.clearRetainingCapacity();
+
+    state.token_start_line = state.line;
+    state.token_start_column = state.column + 1;
 }
 
 /// Helper function for tokenize() to determine if a character is a symbol used in JSON.
@@ -158,11 +217,24 @@ fn isJsonSymbol(char: u8) bool {
 }
 
 /// Helper function for tokenize() to turn ArrayList tokens into string tokens.
-fn finalizeToken(allocator: std.mem.Allocator, token_builder: *std.ArrayList(u8)) ![]u8 {
-    var token = try allocator.alloc(u8, token_builder.items.len);
-    @memcpy(token[0..], token_builder.items);
+fn finalizeToken(allocator: std.mem.Allocator, token_builder: *std.ArrayList(u8), state: TokenizerState) !Token {
+    var text = try allocator.alloc(u8, token_builder.items.len);
+    @memcpy(text[0..], token_builder.items);
+
+    const token = Token.init(text, state);
 
     return token;
+}
+
+/// Helper function for tokenize() to add a character to a token in ArrayList form.
+/// It also sets the token_start_line and token_start_column values correctly.
+fn addToTokenBuilder(token_builder: *std.ArrayList(u8), b: u8, state: *TokenizerState) !void {
+    if (token_builder.items.len == 0) {
+        state.token_start_line = state.line;
+        state.token_start_column = state.column;
+    }
+
+    try token_builder.append(b);
 }
 
 /// Print out JSON in human-readable format.
