@@ -45,11 +45,10 @@ pub fn parseFile(allocator: std.mem.Allocator, file: std.fs.File) !Json {
         std.debug.print("token: {any}\n", .{item});
     }
 
-    // TODO: This is temporary to make the compiler happy.
-    const root = JsonObject.init(aa_allocator);
+    const root = try parser(aa_allocator, tokens);
 
     return Json{
-        .root = JsonValue{ .object = root },
+        .root = root,
         .aa = aa,
         .allocator = aa_allocator,
     };
@@ -128,7 +127,7 @@ fn tokenize(allocator: std.mem.Allocator, file: std.fs.File) !std.ArrayList(Toke
         b_last = b;
         b = reader.readByte() catch break;
     }) {
-        std.debug.print("b: {c} ({d})\n", .{b, b});
+        std.debug.print("b: {c} ({d})\n", .{ b, b });
         // Start of string
         if (!state.in_string and b == '"') {
             state.in_string = true;
@@ -237,6 +236,24 @@ fn addToTokenBuilder(token_builder: *std.ArrayList(u8), b: u8, state: *Tokenizer
     try token_builder.append(b);
 }
 
+fn parser(allocator: std.mem.Allocator, tokens: std.ArrayList(Token)) !JsonValue {
+    const root = if (tokens.items[0].token_type == Token.TokenType.begin_object)
+        JsonValue{ .object = JsonObject.init(allocator) }
+    else if (tokens.items[0].token_type == Token.TokenType.begin_array)
+        JsonValue{ .array = JsonArray.init(allocator) }
+    else
+        return JsonError.RootNotObjectOrArray;
+
+    var node_stack = try std.ArrayList(JsonValue).initCapacity(allocator, 1);
+    try node_stack.append(root);
+
+    for (tokens.items[1..]) |token| {
+        _ = token;
+    }
+
+    return root;
+}
+
 /// Print out JSON in human-readable format.
 pub fn printJson(json: JsonValue, stream: std.fs.File) !void {
     const writer = stream.writer().any();
@@ -261,22 +278,23 @@ fn printJsonHelper(json: JsonValue, prefix: []const u8, writer: std.io.AnyWriter
             try writer.print("{s}}}\n", .{prefix});
         },
         .array => |a| {
-            try writer.print("{{\n", .{});
+            try writer.print("[\n", .{});
 
             for (a.items) |i| {
                 try printJsonHelper(i, new_prefix, writer);
             }
 
-            try writer.print("{s}}}\n", .{prefix});
+            try writer.print("{s}]\n", .{prefix});
         },
         .primitive => |_| {},
     }
 }
 
-const JsonError = error {
+const JsonError = error{
     UnclosedString,
     NameSeparatorInArray,
     NoNameInObject,
+    RootNotObjectOrArray,
 };
 
 test "parse example json" {
@@ -328,6 +346,6 @@ test "parse all test files" {
     }
 
     std.debug.print("Parse all test files results:\n", .{});
-    std.debug.print("  correct: {d}/{d}\n", .{total_tests - incorrect_tests, total_tests});
+    std.debug.print("  correct: {d}/{d}\n", .{ total_tests - incorrect_tests, total_tests });
     try std.testing.expectEqual(0, incorrect_tests);
 }
