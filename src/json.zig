@@ -253,7 +253,7 @@ fn parser(allocator: std.mem.Allocator, tokens: std.ArrayList(Token)) !JsonValue
 
     while (curr < tokens.items.len and node_stack.items.len > 0) : (curr += 1) {
         switch (node_stack.items[node_stack.items.len - 1].*) {
-            .array => |_| {
+            .array => |*a| {
                 if (tokens.items[curr].token_type == .end_array) {
                     _ = node_stack.pop();
                     continue;
@@ -262,10 +262,30 @@ fn parser(allocator: std.mem.Allocator, tokens: std.ArrayList(Token)) !JsonValue
                 if (tokens.items[curr].token_type == .end_object) {
                     return JsonError.EndObjectInArray;
                 }
+
+                if (tokens.items[curr].token_type == .name_separator) {
+                    return JsonError.NameSeparatorInArray;
+                }
+
+                if (tokens.items[curr].token_type == .value_separator) {
+                    continue;
+                }
+
+                const value_token = tokens.items[curr];
+                const value = try parseToken(allocator, value_token);
+                std.debug.print("a value: {any}\n\n", .{value});
+
+                try a.append(value);
+
+                // If this was an object or array, we need to add it to the stack.
+                switch (value) {
+                    .object, .array => try node_stack.append(&a.items[a.items.len - 1]),
+                    else => {},
+                }
+
+                continue;
             },
             .object => |*o| {
-                std.debug.print("object: {any}\n\n", .{o});
-
                 if (tokens.items[curr].token_type == .end_object) {
                     _ = node_stack.pop();
                     continue;
@@ -278,15 +298,11 @@ fn parser(allocator: std.mem.Allocator, tokens: std.ArrayList(Token)) !JsonValue
                 if (tokens.items[curr].token_type == .string_literal and tokens.items[curr + 1].token_type == .name_separator) {
                     const name_token = tokens.items[curr];
                     const name = name_token.value[1 .. name_token.value.len - 1];
-                    std.debug.print("name: {s}\n\n", .{name});
 
                     const value_token = tokens.items[curr + 2];
                     const value = try parseToken(allocator, value_token);
-                    std.debug.print("value: {any}\n\n", .{value});
 
-                    std.log.debug("Adding \"{s}\": {any} to object", .{ name, value });
                     try o.put(name, value);
-                    std.log.debug("Added", .{});
 
                     // If this was an object or array, we need to add it to the stack.
                     switch (value) {
@@ -319,7 +335,7 @@ fn parseToken(allocator: std.mem.Allocator, token: Token) !JsonValue {
 fn parseLiteral(token: Token) !JsonValue {
     return JsonValue{ .primitive = switch (token.token_type) {
         .null_literal => JsonPrimitive.null,
-        .string_literal => JsonPrimitive{ .string = token.value[0 .. token.value.len - 1] },
+        .string_literal => JsonPrimitive{ .string = token.value[1 .. token.value.len - 1] },
         .bool_literal => JsonPrimitive{ .boolean = token.value[0] == 't' },
         .number_literal => JsonPrimitive{ .number = std.fmt.parseFloat(f64, token.value) catch return JsonError.InvalidValue },
         else => unreachable,
@@ -330,40 +346,41 @@ fn parseLiteral(token: Token) !JsonValue {
 pub fn printJson(json: JsonValue, stream: std.fs.File) !void {
     const writer = stream.writer().any();
 
-    try printJsonHelper(json, "", writer);
+    try printJsonHelper(json, "", true, writer);
 }
 
-fn printJsonHelper(json: JsonValue, prefix: []const u8, writer: std.io.AnyWriter) !void {
+fn printJsonHelper(json: JsonValue, prefix: []const u8, use_prefix: bool, writer: std.io.AnyWriter) !void {
     var buf: [64]u8 = undefined;
     const new_prefix = try std.fmt.bufPrint(&buf, "  {s}", .{prefix});
+    const effective_prefix = if (use_prefix) prefix else "";
 
     switch (json) {
         .object => |o| {
-            try writer.print("{{\n", .{});
+            try writer.print("{s}{{\n", .{effective_prefix});
 
             var iter = o.iterator();
-            while (iter.next()) |i| {
-                try writer.print("{s}\"{s}\": ", .{ new_prefix, i.key_ptr.* });
-                try printJsonHelper(i.value_ptr.*, new_prefix, writer);
+            while (iter.next()) |v| {
+                try writer.print("{s}{s}: ", .{ new_prefix, v.key_ptr.* });
+                try printJsonHelper(v.value_ptr.*, new_prefix, false, writer);
             }
 
             try writer.print("{s}}}\n", .{prefix});
         },
         .array => |a| {
-            try writer.print("{s}[\n", .{prefix});
+            try writer.print("{s}[\n", .{effective_prefix});
 
-            for (a.items) |i| {
-                try printJsonHelper(i, new_prefix, writer);
+            for (a.items) |v| {
+                try printJsonHelper(v, new_prefix, true, writer);
             }
 
             try writer.print("{s}]\n", .{prefix});
         },
         .primitive => |p| {
             switch (p) {
-                .string => |s| try writer.print("{s}\n", .{s}),
-                .null => try writer.print("null\n", .{}),
-                .boolean => |b| if (b) try writer.print("true\n", .{}) else try writer.print("false\n", .{}),
-                .number => |f| try writer.print("{d}\n", .{f}),
+                .string => |s| try writer.print("{s}{s}\n", .{ effective_prefix, s }),
+                .null => try writer.print("{s}null\n", .{effective_prefix}),
+                .boolean => |b| if (b) try writer.print("{s}true\n", .{effective_prefix}) else try writer.print("{s}false\n", .{effective_prefix}),
+                .number => |f| try writer.print("{s}{d}\n", .{ effective_prefix, f }),
             }
         },
     }
