@@ -247,71 +247,75 @@ fn parser(allocator: std.mem.Allocator, tokens: std.ArrayList(Token)) !JsonValue
 
     while (curr < tokens.items.len and node_stack.items.len > 0) : (curr += 1) {
         switch (node_stack.items[node_stack.items.len - 1].*) {
-            .array => |*a| {
-                if (tokens.items[curr].token_type == .end_array) {
-                    _ = node_stack.pop();
-                    continue;
-                }
-
-                if (tokens.items[curr].token_type == .end_object) {
-                    return JsonError.EndObjectInArray;
-                }
-
-                if (tokens.items[curr].token_type == .name_separator) {
-                    return JsonError.NameSeparatorInArray;
-                }
-
-                if (tokens.items[curr].token_type == .value_separator) {
-                    continue;
-                }
-
-                const value_token = tokens.items[curr];
-                const value = try parseToken(allocator, value_token);
-
-                try a.append(value);
-
-                // If this was an object or array, we need to add it to the stack.
-                switch (value) {
-                    .object, .array => try node_stack.append(&a.items[a.items.len - 1]),
-                    else => {},
-                }
-
-                continue;
-            },
-            .object => |*o| {
-                if (tokens.items[curr].token_type == .end_object) {
-                    _ = node_stack.pop();
-                    continue;
-                }
-
-                if (tokens.items[curr].token_type == .end_array) {
-                    return JsonError.EndArrayInObject;
-                }
-
-                if (tokens.items[curr].token_type == .string_literal and tokens.items[curr + 1].token_type == .name_separator) {
-                    const name_token = tokens.items[curr];
-                    const name = name_token.value[1 .. name_token.value.len - 1];
-
-                    const value_token = tokens.items[curr + 2];
-                    const value = try parseToken(allocator, value_token);
-
-                    try o.put(name, value);
-
-                    // If this was an object or array, we need to add it to the stack.
-                    switch (value) {
-                        .object, .array => try node_stack.append(o.getPtr(name) orelse unreachable),
-                        else => {},
-                    }
-
-                    curr += 2;
-                    continue;
-                }
-            },
+            .array => |*a| try parseArray(allocator, a, tokens, &curr, &node_stack),
+            .object => |*o| try parseObject(allocator, o, tokens, &curr, &node_stack),
             .primitive => unreachable,
         }
     }
 
     return root;
+}
+
+/// Helper function for parser() to handle parsing of arrays.
+fn parseArray(allocator: std.mem.Allocator, array: *JsonArray, tokens: std.ArrayList(Token), curr: *usize, node_stack: *std.ArrayList(*JsonValue)) !void {
+    if (tokens.items[curr.*].token_type == .end_array) {
+        _ = node_stack.pop();
+        return;
+    }
+
+    if (tokens.items[curr.*].token_type == .end_object) {
+        return JsonError.EndObjectInArray;
+    }
+
+    if (tokens.items[curr.*].token_type == .name_separator) {
+        return JsonError.NameSeparatorInArray;
+    }
+
+    if (tokens.items[curr.*].token_type == .value_separator) {
+        return;
+    }
+
+    const value_token = tokens.items[curr.*];
+    const value = try parseToken(allocator, value_token);
+
+    try array.append(value);
+
+    // If this was an object or array, we need to add it to the stack.
+    switch (value) {
+        .object, .array => try node_stack.append(&array.items[array.items.len - 1]),
+        else => {},
+    }
+}
+
+/// Helper function for parser() to handle parsing of objects.
+fn parseObject(allocator: std.mem.Allocator, object: *JsonObject, tokens: std.ArrayList(Token), curr: *usize, node_stack: *std.ArrayList(*JsonValue)) !void {
+    if (tokens.items[curr.*].token_type == .end_object) {
+        _ = node_stack.pop();
+        return;
+    }
+
+    if (tokens.items[curr.*].token_type == .end_array) {
+        return JsonError.EndArrayInObject;
+    }
+
+    if (tokens.items[curr.*].token_type == .string_literal and tokens.items[curr.* + 1].token_type == .name_separator) {
+        const name_token = tokens.items[curr.*];
+        const name = name_token.value[1 .. name_token.value.len - 1];
+
+        const value_token = tokens.items[curr.* + 2];
+        const value = try parseToken(allocator, value_token);
+
+        try object.put(name, value);
+
+        // If this was an object or array, we need to add it to the stack.
+        switch (value) {
+            .object, .array => try node_stack.append(object.getPtr(name) orelse unreachable),
+            else => {},
+        }
+
+        curr.* += 2;
+        return;
+    }
 }
 
 /// Helper function for parser() to parse Tokens into JsonValue.
