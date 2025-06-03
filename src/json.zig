@@ -40,13 +40,8 @@ pub fn parseFile(allocator: std.mem.Allocator, file: std.fs.File) !Json {
     const aa_allocator = aa.allocator();
 
     // Tokenize file into a more useful form.
-    std.log.debug("Tokenizing", .{});
     const tokens = try tokenize(aa_allocator, file);
-    for (tokens.items) |item| {
-        std.debug.print("token: {any}\n", .{item});
-    }
 
-    std.log.debug("Parsing", .{});
     const root = try parser(aa_allocator, tokens);
 
     return Json{
@@ -129,7 +124,6 @@ fn tokenize(allocator: std.mem.Allocator, file: std.fs.File) !std.ArrayList(Toke
         b_last = b;
         b = reader.readByte() catch break;
     }) {
-        std.debug.print("b: {c} ({d})\n", .{ b, b });
         // Start of string
         if (!state.in_string and b == '"') {
             state.in_string = true;
@@ -273,7 +267,6 @@ fn parser(allocator: std.mem.Allocator, tokens: std.ArrayList(Token)) !JsonValue
 
                 const value_token = tokens.items[curr];
                 const value = try parseToken(allocator, value_token);
-                std.debug.print("a value: {any}\n\n", .{value});
 
                 try a.append(value);
 
@@ -419,7 +412,6 @@ test "parse all test files" {
 
     while (try test_files.next()) |entry| {
         total_tests += 1;
-        std.debug.print("file: {s}\n", .{entry.name});
 
         const should_pass = std.mem.eql(u8, entry.name[0..4], "pass");
 
