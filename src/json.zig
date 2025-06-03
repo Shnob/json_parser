@@ -284,7 +284,7 @@ fn parser(allocator: std.mem.Allocator, tokens: std.ArrayList(Token)) !JsonValue
                     const value = try parseToken(allocator, value_token);
                     std.debug.print("value: {any}\n\n", .{value});
 
-                    std.log.debug("Adding \"{s}\": {any} to object", .{name, value});
+                    std.log.debug("Adding \"{s}\": {any} to object", .{ name, value });
                     try o.put(name, value);
                     std.log.debug("Added", .{});
 
@@ -317,9 +317,13 @@ fn parseToken(allocator: std.mem.Allocator, token: Token) !JsonValue {
 
 /// Helper function for parser() to parse literals.
 fn parseLiteral(token: Token) !JsonValue {
-    _ = token;
-    // TODO: Temporary for testing
-    return JsonValue{ .primitive = JsonPrimitive.null };
+    return JsonValue{ .primitive = switch (token.token_type) {
+        .null_literal => JsonPrimitive.null,
+        .string_literal => JsonPrimitive{ .string = token.value[0 .. token.value.len - 1] },
+        .bool_literal => JsonPrimitive{ .boolean = token.value[0] == 't' },
+        .number_literal => JsonPrimitive{ .number = std.fmt.parseFloat(f64, token.value) catch return JsonError.InvalidValue },
+        else => unreachable,
+    } };
 }
 
 /// Print out JSON in human-readable format.
@@ -339,7 +343,7 @@ fn printJsonHelper(json: JsonValue, prefix: []const u8, writer: std.io.AnyWriter
 
             var iter = o.iterator();
             while (iter.next()) |i| {
-                try writer.print("{s}\"{s}\": ", .{new_prefix, i.key_ptr.*});
+                try writer.print("{s}\"{s}\": ", .{ new_prefix, i.key_ptr.* });
                 try printJsonHelper(i.value_ptr.*, new_prefix, writer);
             }
 
@@ -354,8 +358,13 @@ fn printJsonHelper(json: JsonValue, prefix: []const u8, writer: std.io.AnyWriter
 
             try writer.print("{s}]\n", .{prefix});
         },
-        .primitive => |_| {
-            try writer.print("(prim)\n", .{});
+        .primitive => |p| {
+            switch (p) {
+                .string => |s| try writer.print("{s}\n", .{s}),
+                .null => try writer.print("null\n", .{}),
+                .boolean => |b| if (b) try writer.print("true\n", .{}) else try writer.print("false\n", .{}),
+                .number => |f| try writer.print("{d}\n", .{f}),
+            }
         },
     }
 }
@@ -367,6 +376,7 @@ const JsonError = error{
     RootNotObjectOrArray,
     EndObjectInArray,
     EndArrayInObject,
+    InvalidValue,
 };
 
 test "parse example json" {
