@@ -40,11 +40,13 @@ pub fn parseFile(allocator: std.mem.Allocator, file: std.fs.File) !Json {
     const aa_allocator = aa.allocator();
 
     // Tokenize file into a more useful form.
+    std.log.debug("Tokenizing", .{});
     const tokens = try tokenize(aa_allocator, file);
     for (tokens.items) |item| {
         std.debug.print("token: {any}\n", .{item});
     }
 
+    std.log.debug("Parsing", .{});
     const root = try parser(aa_allocator, tokens);
 
     return Json{
@@ -237,21 +239,87 @@ fn addToTokenBuilder(token_builder: *std.ArrayList(u8), b: u8, state: *Tokenizer
 }
 
 fn parser(allocator: std.mem.Allocator, tokens: std.ArrayList(Token)) !JsonValue {
-    const root = if (tokens.items[0].token_type == Token.TokenType.begin_object)
+    var root: JsonValue = if (tokens.items[0].token_type == Token.TokenType.begin_object)
         JsonValue{ .object = JsonObject.init(allocator) }
     else if (tokens.items[0].token_type == Token.TokenType.begin_array)
         JsonValue{ .array = JsonArray.init(allocator) }
     else
         return JsonError.RootNotObjectOrArray;
 
-    var node_stack = try std.ArrayList(JsonValue).initCapacity(allocator, 1);
-    try node_stack.append(root);
+    var node_stack = try std.ArrayList(*JsonValue).initCapacity(allocator, 1);
+    try node_stack.append(&root);
 
-    for (tokens.items[1..]) |token| {
-        _ = token;
+    var curr: usize = 1;
+
+    while (curr < tokens.items.len and node_stack.items.len > 0) : (curr += 1) {
+        switch (node_stack.items[node_stack.items.len - 1].*) {
+            .array => |_| {
+                if (tokens.items[curr].token_type == .end_array) {
+                    _ = node_stack.pop();
+                    continue;
+                }
+
+                if (tokens.items[curr].token_type == .end_object) {
+                    return JsonError.EndObjectInArray;
+                }
+            },
+            .object => |*o| {
+                std.debug.print("object: {any}\n\n", .{o});
+
+                if (tokens.items[curr].token_type == .end_object) {
+                    _ = node_stack.pop();
+                    continue;
+                }
+
+                if (tokens.items[curr].token_type == .end_array) {
+                    return JsonError.EndArrayInObject;
+                }
+
+                if (tokens.items[curr].token_type == .string_literal and tokens.items[curr + 1].token_type == .name_separator) {
+                    const name_token = tokens.items[curr];
+                    const name = name_token.value[1 .. name_token.value.len - 1];
+                    std.debug.print("name: {s}\n\n", .{name});
+
+                    const value_token = tokens.items[curr + 2];
+                    const value = try parseToken(allocator, value_token);
+                    std.debug.print("value: {any}\n\n", .{value});
+
+                    std.log.debug("Adding \"{s}\": {any} to object", .{name, value});
+                    try o.put(name, value);
+                    std.log.debug("Added", .{});
+
+                    // If this was an object or array, we need to add it to the stack.
+                    switch (value) {
+                        .object, .array => try node_stack.append(o.getPtr(name) orelse unreachable),
+                        else => {},
+                    }
+
+                    curr += 2;
+                    continue;
+                }
+            },
+            .primitive => unreachable,
+        }
     }
 
     return root;
+}
+
+/// Helper function for parser() to parse Tokens into JsonValue.
+fn parseToken(allocator: std.mem.Allocator, token: Token) !JsonValue {
+    switch (token.token_type) {
+        .begin_object => return JsonValue{ .object = JsonObject.init(allocator) },
+        .begin_array => return JsonValue{ .array = JsonArray.init(allocator) },
+        .string_literal, .bool_literal, .null_literal, .number_literal => return try parseLiteral(token),
+        else => unreachable,
+    }
+}
+
+/// Helper function for parser() to parse literals.
+fn parseLiteral(token: Token) !JsonValue {
+    _ = token;
+    // TODO: Temporary for testing
+    return JsonValue{ .primitive = JsonPrimitive.null };
 }
 
 /// Print out JSON in human-readable format.
@@ -271,14 +339,14 @@ fn printJsonHelper(json: JsonValue, prefix: []const u8, writer: std.io.AnyWriter
 
             var iter = o.iterator();
             while (iter.next()) |i| {
-                try writer.print("\"{s}\": ", .{i.key_ptr.*});
+                try writer.print("{s}\"{s}\": ", .{new_prefix, i.key_ptr.*});
                 try printJsonHelper(i.value_ptr.*, new_prefix, writer);
             }
 
             try writer.print("{s}}}\n", .{prefix});
         },
         .array => |a| {
-            try writer.print("[\n", .{});
+            try writer.print("{s}[\n", .{prefix});
 
             for (a.items) |i| {
                 try printJsonHelper(i, new_prefix, writer);
@@ -286,7 +354,9 @@ fn printJsonHelper(json: JsonValue, prefix: []const u8, writer: std.io.AnyWriter
 
             try writer.print("{s}]\n", .{prefix});
         },
-        .primitive => |_| {},
+        .primitive => |_| {
+            try writer.print("(prim)\n", .{});
+        },
     }
 }
 
@@ -295,6 +365,8 @@ const JsonError = error{
     NameSeparatorInArray,
     NoNameInObject,
     RootNotObjectOrArray,
+    EndObjectInArray,
+    EndArrayInObject,
 };
 
 test "parse example json" {
