@@ -459,7 +459,8 @@ test "parse all test files" {
     var test_files = test_dir.iterate();
 
     var total_tests: u32 = 0;
-    var incorrect_tests: u32 = 0;
+    var false_positive: u32 = 0;
+    var false_negative: u32 = 0;
 
     var diag = JsonDiag{};
 
@@ -477,7 +478,7 @@ test "parse all test files" {
             var good_result = result catch {
                 // Failed when should have passed.
                 try diag.print(std.io.getStdErr());
-                incorrect_tests += 1;
+                false_negative += 1;
                 continue;
             };
             defer good_result.deinit();
@@ -486,12 +487,15 @@ test "parse all test files" {
                 continue;
             };
             // Passed when should have failed.
-            incorrect_tests += 1;
+            false_positive += 1;
             defer good_result.deinit();
         }
     }
 
     std.debug.print("Parse all test files results:\n", .{});
+    const incorrect_tests = false_positive + false_negative;
     std.debug.print("  correct: {d}/{d}\n", .{ total_tests - incorrect_tests, total_tests });
+    std.debug.print("  false positives: {d}\n", .{ false_positive });
+    std.debug.print("  false negatives: {d}\n", .{ false_negative });
     try std.testing.expectEqual(0, incorrect_tests);
 }
