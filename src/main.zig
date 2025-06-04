@@ -17,7 +17,11 @@ pub fn main() !void {
     const file = try std.fs.cwd().openFile(file_name, .{});
     defer file.close();
 
-    var parsed_json = try json.parseFile(allocator, file);
+    var diag = json.JsonDiag{};
+    var parsed_json = json.parseFile(allocator, file, &diag) catch |err| {
+        try diag.print(std.io.getStdErr());
+        return err;
+    };
     defer parsed_json.deinit();
 
     try json.printJson(parsed_json.root, std.io.getStdOut());

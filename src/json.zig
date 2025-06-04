@@ -32,7 +32,7 @@ pub const Json = struct {
     }
 };
 
-pub fn parseFile(allocator: std.mem.Allocator, file: std.fs.File) !Json {
+pub fn parseFile(allocator: std.mem.Allocator, file: std.fs.File, diag: *JsonDiag) !Json {
     var aa = std.heap.ArenaAllocator.init(allocator);
     // If the parse fails, the aa (and all allocated memory with it).
     // If the parse succeeds, the aa deinit is in the hands of the caller.
@@ -40,9 +40,9 @@ pub fn parseFile(allocator: std.mem.Allocator, file: std.fs.File) !Json {
     const aa_allocator = aa.allocator();
 
     // Tokenize file into a more useful form.
-    const tokens = try tokenize(aa_allocator, file);
+    const tokens = try tokenize(aa_allocator, file, diag);
 
-    const root = try parser(aa_allocator, tokens);
+    const root = try parser(aa_allocator, tokens, diag);
 
     return Json{
         .root = root,
@@ -105,7 +105,7 @@ const TokenizerState = struct {
     token_start_column: u32 = 1,
 };
 
-fn tokenize(allocator: std.mem.Allocator, file: std.fs.File) !std.ArrayList(Token) {
+fn tokenize(allocator: std.mem.Allocator, file: std.fs.File, diag: *JsonDiag) !std.ArrayList(Token) {
     var br = std.io.bufferedReader(file.reader());
     const reader = br.reader();
 
@@ -177,10 +177,8 @@ fn tokenize(allocator: std.mem.Allocator, file: std.fs.File) !std.ArrayList(Toke
     // We should not be in a string at this point.
     // If we are, the JSON is invalid.
     if (state.in_string) {
-        try std.io.getStdErr().writer().print(
-            "Parse Error: Unclosed string beginning on line {d}\n",
-            .{state.token_start_line},
-        );
+        diag.line = state.token_start_line;
+        diag.column = state.token_start_column;
 
         return JsonError.UnclosedString;
     }
@@ -232,13 +230,17 @@ fn addToTokenBuilder(token_builder: *std.ArrayList(u8), b: u8, state: *Tokenizer
     try token_builder.append(b);
 }
 
-fn parser(allocator: std.mem.Allocator, tokens: std.ArrayList(Token)) !JsonValue {
+fn parser(allocator: std.mem.Allocator, tokens: std.ArrayList(Token), diag: *JsonDiag) !JsonValue {
     var root: JsonValue = if (tokens.items[0].token_type == Token.TokenType.begin_object)
         JsonValue{ .object = JsonObject.init(allocator) }
     else if (tokens.items[0].token_type == Token.TokenType.begin_array)
         JsonValue{ .array = JsonArray.init(allocator) }
-    else
+    else {
+        diag.line = tokens.items[0].line;
+        diag.column = tokens.items[0].column;
+
         return JsonError.RootNotObjectOrArray;
+    };
 
     var node_stack = try std.ArrayList(*JsonValue).initCapacity(allocator, 1);
     try node_stack.append(&root);
@@ -247,8 +249,8 @@ fn parser(allocator: std.mem.Allocator, tokens: std.ArrayList(Token)) !JsonValue
 
     while (curr < tokens.items.len and node_stack.items.len > 0) : (curr += 1) {
         switch (node_stack.items[node_stack.items.len - 1].*) {
-            .array => |*a| try parseArray(allocator, a, tokens, &curr, &node_stack),
-            .object => |*o| try parseObject(allocator, o, tokens, &curr, &node_stack),
+            .array => |*a| try parseArray(allocator, a, tokens, &curr, &node_stack, diag),
+            .object => |*o| try parseObject(allocator, o, tokens, &curr, &node_stack, diag),
             .primitive => unreachable,
         }
     }
@@ -257,26 +259,31 @@ fn parser(allocator: std.mem.Allocator, tokens: std.ArrayList(Token)) !JsonValue
 }
 
 /// Helper function for parser() to handle parsing of arrays.
-fn parseArray(allocator: std.mem.Allocator, array: *JsonArray, tokens: std.ArrayList(Token), curr: *usize, node_stack: *std.ArrayList(*JsonValue)) !void {
-    if (tokens.items[curr.*].token_type == .end_array) {
+fn parseArray(allocator: std.mem.Allocator, array: *JsonArray, tokens: std.ArrayList(Token), curr: *usize, node_stack: *std.ArrayList(*JsonValue), diag: *JsonDiag) !void {
+    const curr_token = tokens.items[curr.*];
+
+    if (curr_token.token_type == .end_array) {
         _ = node_stack.pop();
         return;
     }
 
-    if (tokens.items[curr.*].token_type == .end_object) {
+    if (curr_token.token_type == .end_object) {
+        diag.line = curr_token.line;
+        diag.column = curr_token.column;
         return JsonError.EndObjectInArray;
     }
 
-    if (tokens.items[curr.*].token_type == .name_separator) {
+    if (curr_token.token_type == .name_separator) {
+        diag.line = curr_token.line;
+        diag.column = curr_token.column;
         return JsonError.NameSeparatorInArray;
     }
 
-    if (tokens.items[curr.*].token_type == .value_separator) {
+    if (curr_token.token_type == .value_separator) {
         return;
     }
 
-    const value_token = tokens.items[curr.*];
-    const value = try parseToken(allocator, value_token);
+    const value = try parseToken(allocator, curr_token, diag);
 
     try array.append(value);
 
@@ -288,22 +295,26 @@ fn parseArray(allocator: std.mem.Allocator, array: *JsonArray, tokens: std.Array
 }
 
 /// Helper function for parser() to handle parsing of objects.
-fn parseObject(allocator: std.mem.Allocator, object: *JsonObject, tokens: std.ArrayList(Token), curr: *usize, node_stack: *std.ArrayList(*JsonValue)) !void {
-    if (tokens.items[curr.*].token_type == .end_object) {
+fn parseObject(allocator: std.mem.Allocator, object: *JsonObject, tokens: std.ArrayList(Token), curr: *usize, node_stack: *std.ArrayList(*JsonValue), diag: *JsonDiag) !void {
+    const curr_token = tokens.items[curr.*];
+
+    if (curr_token.token_type == .end_object) {
         _ = node_stack.pop();
         return;
     }
 
-    if (tokens.items[curr.*].token_type == .end_array) {
+    if (curr_token.token_type == .end_array) {
+        diag.line = curr_token.line;
+        diag.column = curr_token.column;
         return JsonError.EndArrayInObject;
     }
 
-    if (tokens.items[curr.*].token_type == .string_literal and tokens.items[curr.* + 1].token_type == .name_separator) {
-        const name_token = tokens.items[curr.*];
+    if (curr_token.token_type == .string_literal and tokens.items[curr.* + 1].token_type == .name_separator) {
+        const name_token = curr_token;
         const name = name_token.value[1 .. name_token.value.len - 1];
 
         const value_token = tokens.items[curr.* + 2];
-        const value = try parseToken(allocator, value_token);
+        const value = try parseToken(allocator, value_token, diag);
 
         try object.put(name, value);
 
@@ -319,22 +330,26 @@ fn parseObject(allocator: std.mem.Allocator, object: *JsonObject, tokens: std.Ar
 }
 
 /// Helper function for parser() to parse Tokens into JsonValue.
-fn parseToken(allocator: std.mem.Allocator, token: Token) !JsonValue {
+fn parseToken(allocator: std.mem.Allocator, token: Token, diag: *JsonDiag) !JsonValue {
     switch (token.token_type) {
         .begin_object => return JsonValue{ .object = JsonObject.init(allocator) },
         .begin_array => return JsonValue{ .array = JsonArray.init(allocator) },
-        .string_literal, .bool_literal, .null_literal, .number_literal => return try parseLiteral(token),
+        .string_literal, .bool_literal, .null_literal, .number_literal => return try parseLiteral(token, diag),
         else => unreachable,
     }
 }
 
 /// Helper function for parser() to parse literals.
-fn parseLiteral(token: Token) !JsonValue {
+fn parseLiteral(token: Token, diag: *JsonDiag) !JsonValue {
     return JsonValue{ .primitive = switch (token.token_type) {
         .null_literal => JsonPrimitive.null,
         .string_literal => JsonPrimitive{ .string = token.value[1 .. token.value.len - 1] },
         .bool_literal => JsonPrimitive{ .boolean = token.value[0] == 't' },
-        .number_literal => JsonPrimitive{ .number = std.fmt.parseFloat(f64, token.value) catch return JsonError.InvalidValue },
+        .number_literal => JsonPrimitive{ .number = std.fmt.parseFloat(f64, token.value) catch {
+            diag.line = token.line;
+            diag.column = token.column;
+            return JsonError.InvalidValue;
+        } },
         else => unreachable,
     } };
 }
@@ -391,6 +406,25 @@ const JsonError = error{
     EndObjectInArray,
     EndArrayInObject,
     InvalidValue,
+};
+
+/// Small struct to provide context in the event of an error.
+pub const JsonDiag = struct {
+    line: ?u32 = null,
+    column: ?u32 = null,
+
+    pub fn print(self: JsonDiag, stream: std.fs.File) !void {
+        const writer = stream.writer();
+
+        if (self.line) |l| {
+            try writer.print("Error occured on line {d}", .{l});
+            if (self.column) |c| {
+                try writer.print(", column {d}\n", .{c});
+            } else {
+                try writer.print("\n", .{});
+            }
+        }
+    }
 };
 
 test "parse example json" {
