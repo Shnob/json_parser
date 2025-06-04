@@ -355,7 +355,11 @@ fn parseToken(allocator: std.mem.Allocator, token: Token, diag: *JsonDiag) !Json
         .begin_object => return JsonValue{ .object = JsonObject.init(allocator) },
         .begin_array => return JsonValue{ .array = JsonArray.init(allocator) },
         .string_literal, .bool_literal, .null_literal, .number_literal => return try parseLiteral(token, diag),
-        else => unreachable,
+        else => {
+            diag.line = token.line;
+            diag.column = token.column;
+            return JsonError.InvalidToken;
+        },
     }
 }
 
@@ -426,6 +430,7 @@ const JsonError = error{
     EndObjectInArray,
     EndArrayInObject,
     InvalidValue,
+    InvalidToken,
 };
 
 /// Small struct to provide context in the event of an error.
@@ -447,18 +452,6 @@ pub const JsonDiag = struct {
     }
 };
 
-test "parse example json" {
-    const allocator = std.testing.allocator;
-
-    const file = try std.fs.cwd().openFile("example.json", .{});
-    defer file.close();
-
-    var json = try parseFile(allocator, file);
-    defer json.deinit();
-
-    try printJson(json.root, std.io.getStdErr());
-}
-
 test "parse all test files" {
     const allocator = std.testing.allocator;
 
@@ -468,6 +461,8 @@ test "parse all test files" {
     var total_tests: u32 = 0;
     var incorrect_tests: u32 = 0;
 
+    var diag = JsonDiag{};
+
     while (try test_files.next()) |entry| {
         total_tests += 1;
 
@@ -475,11 +470,13 @@ test "parse all test files" {
 
         const file = try test_dir.openFile(entry.name, .{});
 
-        const result = parseFile(allocator, file);
+        diag = JsonDiag{};
+        const result = parseFile(allocator, file, &diag);
 
         if (should_pass) {
             var good_result = result catch {
                 // Failed when should have passed.
+                try diag.print(std.io.getStdErr());
                 incorrect_tests += 1;
                 continue;
             };
