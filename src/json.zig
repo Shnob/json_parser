@@ -219,9 +219,10 @@ fn isQuoteEscaped(token: std.ArrayList(u8)) bool {
 
     var i = token.items.len - 1;
     while (i > 0) : (i -= 1) {
-        if (token.items[i] == '\\') 
+        if (token.items[i] == '\\')
             backslash_count += 1
-         else break;
+        else
+            break;
     }
 
     const isEscaped = backslash_count % 2 == 1;
@@ -251,13 +252,13 @@ fn addToTokenBuilder(token_builder: *std.ArrayList(u8), b: u8, state: *Tokenizer
 }
 
 fn parser(allocator: std.mem.Allocator, tokens: std.ArrayList(Token), diag: *JsonDiag) !JsonValue {
-    var root: JsonValue = if (tokens.items[0].token_type == Token.TokenType.begin_object)
+    var root: JsonValue = if ((try parserGetToken(tokens, 0, diag)).token_type == Token.TokenType.begin_object)
         JsonValue{ .object = JsonObject.init(allocator) }
-    else if (tokens.items[0].token_type == Token.TokenType.begin_array)
+    else if ((try parserGetToken(tokens, 0, diag)).token_type == Token.TokenType.begin_array)
         JsonValue{ .array = JsonArray.init(allocator) }
     else {
-        diag.line = tokens.items[0].line;
-        diag.column = tokens.items[0].column;
+        diag.line = (try parserGetToken(tokens, 0, diag)).line;
+        diag.column =( try parserGetToken(tokens, 0, diag)).column;
 
         return JsonError.RootNotObjectOrArray;
     };
@@ -265,26 +266,70 @@ fn parser(allocator: std.mem.Allocator, tokens: std.ArrayList(Token), diag: *Jso
     var node_stack = try std.ArrayList(*JsonValue).initCapacity(allocator, 1);
     try node_stack.append(&root);
 
+    // new_scope track whether a new array or object has started.
+    // Used to determine if a value_separator should be expected.
+    var new_scope = true;
+
     var curr: usize = 1;
 
     while (curr < tokens.items.len and node_stack.items.len > 0) : (curr += 1) {
-        switch (node_stack.items[node_stack.items.len - 1].*) {
-            .array => |*a| try parseArray(allocator, a, tokens, &curr, &node_stack, diag),
-            .object => |*o| try parseObject(allocator, o, tokens, &curr, &node_stack, diag),
-            .primitive => unreachable,
+        if (!new_scope) {
+            const curr_token = try parserGetToken(tokens, curr, diag);
+            // If we're not entering a new scope we must see one of three things:
+            // value_separator, end_object, or end_array.
+            if (curr_token.token_type == .value_separator) {
+                // Skip over the value_separator token.
+                curr += 1;
+            } else if (curr_token.token_type == .end_array or curr_token.token_type == .end_object) {
+                // This is okay. We don't need to skip them.
+            } else {
+                // This is not okay, a value_separator was likely omitted.
+                diag.line = curr_token.line;
+                diag.column = curr_token.column;
+
+                return JsonError.NoValueSeparator;
+            }
         }
+
+        new_scope = switch (node_stack.items[node_stack.items.len - 1].*) {
+            .array => |*a| try parseWithinArray(allocator, a, tokens, &curr, &node_stack, diag),
+            .object => |*o| try parseWithinObject(allocator, o, tokens, &curr, &node_stack, diag),
+            .primitive => unreachable,
+        };
     }
 
     return root;
 }
 
-/// Helper function for parser() to handle parsing of arrays.
-fn parseArray(allocator: std.mem.Allocator, array: *JsonArray, tokens: std.ArrayList(Token), curr: *usize, node_stack: *std.ArrayList(*JsonValue), diag: *JsonDiag) !void {
-    const curr_token = tokens.items[curr.*];
+/// Helper function for parser().
+/// Wraps accessing tokens with error handling in case of EOF.
+fn parserGetToken(tokens: std.ArrayList(Token), index: usize, diag: *JsonDiag) !Token {
+    if (index >= tokens.items.len) {
+        const final_token = tokens.items[tokens.items.len - 1];
+
+        diag.line = final_token.line;
+        diag.column = final_token.column + @as(u32, @intCast(final_token.value.len));
+
+        return JsonError.UnexpectedEOF;
+    }
+
+    return tokens.items[index];
+}
+
+/// Helper function for parser() to handle parsing tokens inside arrays.
+fn parseWithinArray(allocator: std.mem.Allocator, array: *JsonArray, tokens: std.ArrayList(Token), curr: *usize, node_stack: *std.ArrayList(*JsonValue), diag: *JsonDiag) !bool {
+    const curr_token = try parserGetToken(tokens, curr.*, diag);
 
     if (curr_token.token_type == .end_array) {
+        // Check if the last token was a value_separator. This is not allowed.
+        if ((try parserGetToken(tokens, curr.* - 1, diag)).token_type == .value_separator) {
+            diag.line = curr_token.line;
+            diag.column = curr_token.column;
+            return JsonError.TrailingValueSeparator;
+        }
+
         _ = node_stack.pop();
-        return;
+        return false;
     }
 
     if (curr_token.token_type == .end_object) {
@@ -300,27 +345,38 @@ fn parseArray(allocator: std.mem.Allocator, array: *JsonArray, tokens: std.Array
     }
 
     if (curr_token.token_type == .value_separator) {
-        return;
+        diag.line = curr_token.line;
+        diag.column = curr_token.column;
+        return JsonError.InvalidToken;
     }
 
     const value = try parseToken(allocator, curr_token, diag);
 
     try array.append(value);
 
-    // If this was an object or array, we need to add it to the stack.
+    // If this was an object or array, we need to add it to the stack, and return true.
     switch (value) {
-        .object, .array => try node_stack.append(&array.items[array.items.len - 1]),
-        else => {},
+        .object, .array => {
+            try node_stack.append(&array.items[array.items.len - 1]);
+            return true;
+        },
+        else => return false,
     }
 }
 
-/// Helper function for parser() to handle parsing of objects.
-fn parseObject(allocator: std.mem.Allocator, object: *JsonObject, tokens: std.ArrayList(Token), curr: *usize, node_stack: *std.ArrayList(*JsonValue), diag: *JsonDiag) !void {
-    const curr_token = tokens.items[curr.*];
+/// Helper function for parser() to handle parsing tokens inside objects.
+fn parseWithinObject(allocator: std.mem.Allocator, object: *JsonObject, tokens: std.ArrayList(Token), curr: *usize, node_stack: *std.ArrayList(*JsonValue), diag: *JsonDiag) !bool {
+    const curr_token = try parserGetToken(tokens, curr.*, diag);
 
     if (curr_token.token_type == .end_object) {
+        // Check if the last token was a value_separator. This is not allowed.
+        if ((try parserGetToken(tokens, curr.* - 1, diag)).token_type == .value_separator) {
+            diag.line = curr_token.line;
+            diag.column = curr_token.column;
+            return JsonError.TrailingValueSeparator;
+        }
         _ = node_stack.pop();
-        return;
+        return false;
     }
 
     if (curr_token.token_type == .end_array) {
@@ -329,23 +385,36 @@ fn parseObject(allocator: std.mem.Allocator, object: *JsonObject, tokens: std.Ar
         return JsonError.EndArrayInObject;
     }
 
-    if (curr_token.token_type == .string_literal and tokens.items[curr.* + 1].token_type == .name_separator) {
+    if (curr_token.token_type == .value_separator) {
+        diag.line = curr_token.line;
+        diag.column = curr_token.column;
+        return JsonError.InvalidToken;
+    }
+
+    if (curr_token.token_type == .string_literal and (try parserGetToken(tokens, curr.* + 1, diag)).token_type == .name_separator) {
         const name_token = curr_token;
         const name = name_token.value[1 .. name_token.value.len - 1];
 
-        const value_token = tokens.items[curr.* + 2];
+        const value_token = try parserGetToken(tokens, curr.* + 2, diag);
         const value = try parseToken(allocator, value_token, diag);
 
         try object.put(name, value);
 
-        // If this was an object or array, we need to add it to the stack.
-        switch (value) {
-            .object, .array => try node_stack.append(object.getPtr(name) orelse unreachable),
-            else => {},
-        }
-
         curr.* += 2;
-        return;
+
+        // If this was an object or array, we need to add it to the stack, and return true.
+        switch (value) {
+            .object, .array => {
+                try node_stack.append(object.getPtr(name).?);
+                return true;
+            },
+            else => return false,
+        }
+    } else {
+        diag.line = curr_token.line;
+        diag.column = curr_token.column;
+
+        return JsonError.InvalidToken;
     }
 }
 
@@ -431,6 +500,9 @@ const JsonError = error{
     EndArrayInObject,
     InvalidValue,
     InvalidToken,
+    NoValueSeparator,
+    TrailingValueSeparator,
+    UnexpectedEOF,
 };
 
 /// Small struct to provide context in the event of an error.
@@ -495,7 +567,7 @@ test "parse all test files" {
     std.debug.print("Parse all test files results:\n", .{});
     const incorrect_tests = false_positive + false_negative;
     std.debug.print("  correct: {d}/{d}\n", .{ total_tests - incorrect_tests, total_tests });
-    std.debug.print("  false positives: {d}\n", .{ false_positive });
-    std.debug.print("  false negatives: {d}\n", .{ false_negative });
+    std.debug.print("  false positives: {d}\n", .{false_positive});
+    std.debug.print("  false negatives: {d}\n", .{false_negative});
     try std.testing.expectEqual(0, incorrect_tests);
 }
