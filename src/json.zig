@@ -298,6 +298,14 @@ fn parser(allocator: std.mem.Allocator, tokens: std.ArrayList(Token), diag: *Jso
         };
     }
 
+    // There should be no tokens after the node_stack empties.
+    if (curr < tokens.items.len) {
+        const violating_token = try parserGetToken(tokens, curr, diag);
+        diag.line = violating_token.line;
+        diag.column = violating_token.column;
+        return JsonError.TokensAfterRootClose;
+    }
+
     return root;
 }
 
@@ -503,6 +511,7 @@ const JsonError = error{
     NoValueSeparator,
     TrailingValueSeparator,
     UnexpectedEOF,
+    TokensAfterRootClose,
 };
 
 /// Small struct to provide context in the event of an error.
