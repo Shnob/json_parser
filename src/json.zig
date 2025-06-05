@@ -305,6 +305,13 @@ fn parseWithinArray(allocator: std.mem.Allocator, array: *JsonArray, tokens: std
     const curr_token = tokens.items[curr.*];
 
     if (curr_token.token_type == .end_array) {
+        // Check if the last token was a value_separator. This is not allowed.
+        if (tokens.items[curr.* - 1].token_type == .value_separator) {
+            diag.line = curr_token.line;
+            diag.column = curr_token.column;
+            return JsonError.TrailingValueSeparator;
+        }
+
         _ = node_stack.pop();
         return false;
     }
@@ -346,6 +353,12 @@ fn parseWithinObject(allocator: std.mem.Allocator, object: *JsonObject, tokens: 
     const curr_token = tokens.items[curr.*];
 
     if (curr_token.token_type == .end_object) {
+        // Check if the last token was a value_separator. This is not allowed.
+        if (tokens.items[curr.* - 1].token_type == .value_separator) {
+            diag.line = curr_token.line;
+            diag.column = curr_token.column;
+            return JsonError.TrailingValueSeparator;
+        }
         _ = node_stack.pop();
         return false;
     }
@@ -472,6 +485,7 @@ const JsonError = error{
     InvalidValue,
     InvalidToken,
     NoValueSeparator,
+    TrailingValueSeparator,
 };
 
 /// Small struct to provide context in the event of an error.
