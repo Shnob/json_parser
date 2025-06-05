@@ -263,8 +263,8 @@ fn parser(allocator: std.mem.Allocator, tokens: std.ArrayList(Token), diag: *Jso
         return JsonError.RootNotObjectOrArray;
     };
 
-    var node_stack = try std.ArrayList(*JsonValue).initCapacity(allocator, 1);
-    try node_stack.append(&root);
+    var node_stack = try std.ArrayList(struct {*JsonValue, Token}).initCapacity(allocator, 1);
+    try node_stack.append(.{&root, try parserGetToken(tokens, 0, diag)});
 
     // new_scope track whether a new array or object has started.
     // Used to determine if a value_separator should be expected.
@@ -291,11 +291,27 @@ fn parser(allocator: std.mem.Allocator, tokens: std.ArrayList(Token), diag: *Jso
             }
         }
 
-        new_scope = switch (node_stack.items[node_stack.items.len - 1].*) {
+        new_scope = switch (node_stack.items[node_stack.items.len - 1][0].*) {
             .array => |*a| try parseWithinArray(allocator, a, tokens, &curr, &node_stack, diag),
             .object => |*o| try parseWithinObject(allocator, o, tokens, &curr, &node_stack, diag),
             .primitive => unreachable,
         };
+    }
+
+    // There should be no tokens after the node_stack empties.
+    if (curr < tokens.items.len) {
+        const violating_token = try parserGetToken(tokens, curr, diag);
+        diag.line = violating_token.line;
+        diag.column = violating_token.column;
+        return JsonError.TokensAfterRootClose;
+    }
+
+    // There should be no node_stack entries after the tokens run out
+    if (node_stack.items.len > 0) {
+        const last_unclosed_container = node_stack.items[node_stack.items.len-1][1];
+        diag.line = last_unclosed_container.line;
+        diag.column = last_unclosed_container.column;
+        return JsonError.UnclosedContainer;
     }
 
     return root;
@@ -317,7 +333,7 @@ fn parserGetToken(tokens: std.ArrayList(Token), index: usize, diag: *JsonDiag) !
 }
 
 /// Helper function for parser() to handle parsing tokens inside arrays.
-fn parseWithinArray(allocator: std.mem.Allocator, array: *JsonArray, tokens: std.ArrayList(Token), curr: *usize, node_stack: *std.ArrayList(*JsonValue), diag: *JsonDiag) !bool {
+fn parseWithinArray(allocator: std.mem.Allocator, array: *JsonArray, tokens: std.ArrayList(Token), curr: *usize, node_stack: *std.ArrayList(struct {*JsonValue, Token}), diag: *JsonDiag) !bool {
     const curr_token = try parserGetToken(tokens, curr.*, diag);
 
     if (curr_token.token_type == .end_array) {
@@ -357,7 +373,7 @@ fn parseWithinArray(allocator: std.mem.Allocator, array: *JsonArray, tokens: std
     // If this was an object or array, we need to add it to the stack, and return true.
     switch (value) {
         .object, .array => {
-            try node_stack.append(&array.items[array.items.len - 1]);
+            try node_stack.append(.{&array.items[array.items.len - 1], curr_token});
             return true;
         },
         else => return false,
@@ -365,7 +381,7 @@ fn parseWithinArray(allocator: std.mem.Allocator, array: *JsonArray, tokens: std
 }
 
 /// Helper function for parser() to handle parsing tokens inside objects.
-fn parseWithinObject(allocator: std.mem.Allocator, object: *JsonObject, tokens: std.ArrayList(Token), curr: *usize, node_stack: *std.ArrayList(*JsonValue), diag: *JsonDiag) !bool {
+fn parseWithinObject(allocator: std.mem.Allocator, object: *JsonObject, tokens: std.ArrayList(Token), curr: *usize, node_stack: *std.ArrayList(struct {*JsonValue, Token}), diag: *JsonDiag) !bool {
     const curr_token = try parserGetToken(tokens, curr.*, diag);
 
     if (curr_token.token_type == .end_object) {
@@ -405,7 +421,7 @@ fn parseWithinObject(allocator: std.mem.Allocator, object: *JsonObject, tokens: 
         // If this was an object or array, we need to add it to the stack, and return true.
         switch (value) {
             .object, .array => {
-                try node_stack.append(object.getPtr(name).?);
+                try node_stack.append(.{object.getPtr(name).?, value_token});
                 return true;
             },
             else => return false,
@@ -503,6 +519,8 @@ const JsonError = error{
     NoValueSeparator,
     TrailingValueSeparator,
     UnexpectedEOF,
+    TokensAfterRootClose,
+    UnclosedContainer,
 };
 
 /// Small struct to provide context in the event of an error.
