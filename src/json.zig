@@ -453,10 +453,34 @@ fn parseLiteral(token: Token, diag: *JsonDiag) !JsonValue {
     return JsonValue{ .primitive = switch (token.token_type) {
         .null_literal => JsonPrimitive.null,
         .string_literal => JsonPrimitive{ .string = token.value[1 .. token.value.len - 1] },
-        .bool_literal => JsonPrimitive{ .boolean = token.value[0] == 't' },
+        .bool_literal => try parseBoolLiteral(token, diag),
         .number_literal => try parseNumberLiteral(token, diag),
         else => unreachable,
     } };
+}
+
+/// Helper function for parseLiteral() to parse null literals.
+fn parseNullLiteral(token: Token, diag: *JsonDiag) !JsonPrimitive {
+    if (token.value.len == 4 and std.mem.eql(u8, token.value, "null")) {
+        return JsonPrimitive.null;
+    } else {
+        diag.line = token.line;
+        diag.column = token.column;
+        return JsonError.InvalidValue;
+    }
+}
+
+/// Helper function for parseLiteral() to parse boolean literals.
+fn parseBoolLiteral(token: Token, diag: *JsonDiag) !JsonPrimitive {
+    if (token.value.len == 4 and std.mem.eql(u8, token.value, "true")) {
+        return JsonPrimitive{ .boolean = true };
+    } else if (token.value.len == 5 and std.mem.eql(u8, token.value, "false")) {
+        return JsonPrimitive{ .boolean = false };
+    } else {
+        diag.line = token.line;
+        diag.column = token.column;
+        return JsonError.InvalidValue;
+    }
 }
 
 /// Helper function for parseLiteral()
