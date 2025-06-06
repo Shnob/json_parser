@@ -451,7 +451,7 @@ fn parseToken(allocator: std.mem.Allocator, token: Token, diag: *JsonDiag) !Json
 /// Helper function for parser() to parse literals.
 fn parseLiteral(token: Token, diag: *JsonDiag) !JsonValue {
     return JsonValue{ .primitive = switch (token.token_type) {
-        .null_literal => JsonPrimitive.null,
+        .null_literal => try parseNullLiteral(token, diag),
         .string_literal => JsonPrimitive{ .string = token.value[1 .. token.value.len - 1] },
         .bool_literal => try parseBoolLiteral(token, diag),
         .number_literal => try parseNumberLiteral(token, diag),
