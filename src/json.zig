@@ -407,30 +407,38 @@ fn parseWithinObject(allocator: std.mem.Allocator, object: *JsonObject, tokens: 
         return JsonError.InvalidToken;
     }
 
-    if (curr_token.token_type == .string_literal and (try parserGetToken(tokens, curr.* + 1, diag)).token_type == .name_separator) {
-        const name_token = curr_token;
-        const name = name_token.value[1 .. name_token.value.len - 1];
-
-        const value_token = try parserGetToken(tokens, curr.* + 2, diag);
-        const value = try parseToken(allocator, value_token, diag);
-
-        try object.put(name, value);
-
-        curr.* += 2;
-
-        // If this was an object or array, we need to add it to the stack, and return true.
-        switch (value) {
-            .object, .array => {
-                try node_stack.append(.{ object.getPtr(name).?, value_token });
-                return true;
-            },
-            else => return false,
-        }
-    } else {
+    if (curr_token.token_type != .string_literal) {
         diag.line = curr_token.line;
         diag.column = curr_token.column;
 
-        return JsonError.InvalidToken;
+        return JsonError.NoNameInObject;
+    }
+
+    const name_separator_token = try parserGetToken(tokens, curr.* + 1, diag);
+    if (name_separator_token.token_type != .name_separator) {
+        diag.line = name_separator_token.line;
+        diag.column = name_separator_token.column;
+
+        return JsonError.ExpectedNameSeparator;
+    }
+
+    const name_token = curr_token;
+    const name = name_token.value[1 .. name_token.value.len - 1];
+
+    const value_token = try parserGetToken(tokens, curr.* + 2, diag);
+    const value = try parseToken(allocator, value_token, diag);
+
+    try object.put(name, value);
+
+    curr.* += 2;
+
+    // If this was an object or array, we need to add it to the stack, and return true.
+    switch (value) {
+        .object, .array => {
+            try node_stack.append(.{ object.getPtr(name).?, value_token });
+            return true;
+        },
+        else => return false,
     }
 }
 
@@ -562,6 +570,7 @@ const JsonError = error{
     TokensAfterRootClose,
     UnclosedContainer,
     InvalidNumberLiteral,
+    ExpectedNameSeparator,
 };
 
 /// Small struct to provide context in the event of an error.
