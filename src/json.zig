@@ -464,7 +464,8 @@ fn parseLiteral(token: Token, diag: *JsonDiag) !JsonValue {
 fn parseNumberLiteral(token: Token, diag: *JsonDiag) !JsonPrimitive {
     // Numbers are not allowed leading zeros.
     // The exceptions being that zero is the only number: "0",
-    // or that it is followed by a point: "0.2"
+    // or that it is followed by a point: "0.2".
+    // This also stops hexademical values from parsing.
     if (token.value.len >= 2 and token.value[0] == '0' and token.value[1] != '.') {
         diag.line = token.line;
         diag.column = token.column;
