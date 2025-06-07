@@ -264,7 +264,7 @@ fn parser(allocator: std.mem.Allocator, tokens: std.ArrayList(Token), diag: *Jso
         diag.line = (try parserGetToken(tokens, 0, diag)).line;
         diag.column = (try parserGetToken(tokens, 0, diag)).column;
 
-        return JsonError.RootNotObjectOrArray;
+        return JsonError.RootMustBeObjectOrArray;
     };
 
     var node_stack = try std.ArrayList(struct { *JsonValue, Token }).initCapacity(allocator, 1);
@@ -291,7 +291,7 @@ fn parser(allocator: std.mem.Allocator, tokens: std.ArrayList(Token), diag: *Jso
                 diag.line = curr_token.line;
                 diag.column = curr_token.column;
 
-                return JsonError.NoValueSeparator;
+                return JsonError.ExpectedValueSeparator;
             }
         }
 
@@ -315,7 +315,12 @@ fn parser(allocator: std.mem.Allocator, tokens: std.ArrayList(Token), diag: *Jso
         const last_unclosed_container = node_stack.items[node_stack.items.len - 1][1];
         diag.line = last_unclosed_container.line;
         diag.column = last_unclosed_container.column;
-        return JsonError.UnclosedContainer;
+
+        switch (last_unclosed_container.token_type) {
+            .begin_array => return JsonError.UnclosedArray,
+            .begin_object => return JsonError.UnclosedObject,
+            else => unreachable,
+        }
     }
 
     return root;
@@ -330,7 +335,7 @@ fn parserGetToken(tokens: std.ArrayList(Token), index: usize, diag: *JsonDiag) !
         diag.line = final_token.line;
         diag.column = final_token.column + @as(u32, @intCast(final_token.value.len));
 
-        return JsonError.UnexpectedEOF;
+        return JsonError.ExpectedFurtherTokens;
     }
 
     return tokens.items[index];
@@ -415,7 +420,7 @@ fn parseWithinObject(allocator: std.mem.Allocator, object: *JsonObject, tokens: 
         diag.line = curr_token.line;
         diag.column = curr_token.column;
 
-        return JsonError.NoNameInObject;
+        return JsonError.ExpectedString;
     }
 
     const name_separator_token = try parserGetToken(tokens, curr.* + 1, diag);
@@ -622,17 +627,18 @@ fn printJsonHelper(json: JsonValue, prefix: []const u8, use_prefix: bool, writer
 const JsonError = error{
     UnclosedString,
     NameSeparatorInArray,
-    NoNameInObject,
-    RootNotObjectOrArray,
+    ExpectedString,
+    RootMustBeObjectOrArray,
     EndObjectInArray,
     EndArrayInObject,
     InvalidValue,
     InvalidToken,
-    NoValueSeparator,
+    ExpectedValueSeparator,
     TrailingValueSeparator,
-    UnexpectedEOF,
+    ExpectedFurtherTokens,
     TokensAfterRootClose,
-    UnclosedContainer,
+    UnclosedObject,
+    UnclosedArray,
     InvalidNumberLiteral,
     ExpectedNameSeparator,
     InvalidString,

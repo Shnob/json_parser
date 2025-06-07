@@ -20,7 +20,9 @@ pub fn main() !void {
     var diag = json.JsonDiag{};
     var parsed_json = json.parseFile(allocator, file, &diag) catch |err| {
         try diag.print(std.io.getStdErr());
-        return err;
+        const error_name = @errorName(err);
+        std.debug.print("Parsing error: {s}\n", .{error_name});
+        return;
     };
     defer parsed_json.deinit();
 
