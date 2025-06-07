@@ -211,15 +211,19 @@ fn isJsonSymbol(char: u8) bool {
 
 /// Helper function for tokenize() to check if a quote in a string is escaped or not.
 fn isQuoteEscaped(token: std.ArrayList(u8)) bool {
+    return isStringEscaped(token.items);
+}
+
+fn isStringEscaped(string: []const u8) bool {
     // Count number of contiguous backslashes at the end of the string.
-    // If the number is odd, the quote will be escaped.
+    // If the number is odd, the next character will be escaped.
     // If even, it is not escaped.
 
     var backslash_count: u32 = 0;
 
-    var i = token.items.len - 1;
+    var i = string.len - 1;
     while (i > 0) : (i -= 1) {
-        if (token.items[i] == '\\')
+        if (string[i] == '\\')
             backslash_count += 1
         else
             break;
