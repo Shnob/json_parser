@@ -484,7 +484,47 @@ fn parseStringLiteral(token: Token, diag: *JsonDiag) !JsonPrimitive {
     return JsonPrimitive{ .string = string };
 }
 
-fn checkStringValidity(_: []const u8) bool {
+/// Helper function for parseStringLiteral().
+/// Checks a couple things:
+/// - All utf8 characters are valid
+/// - All escapes are legal (e.g. "\x" is not allowed)
+fn checkStringValidity(string: []const u8) bool {
+    // For proper analysis, we need to consider this as a utf8 string.
+    var utf8 = (std.unicode.Utf8View.init(string) catch {
+        // Failed to parse as utf8, string is invalid.
+        return false;
+    }).iterator();
+
+    std.debug.print("\n\nChecking string: {s}\n", .{string});
+
+    // Check for illegal characters
+    while (utf8.nextCodepoint()) |c| {
+        // TODO: Some more nuance might be required here.
+        const CharType = enum {
+            AlwaysValid,
+            CheckForEscape,
+            AlwaysInvalid,
+        };
+
+        std.debug.print("Codepoint: {x}\n", .{c});
+
+        const char_type: CharType = switch (c) {
+            0x20...0x21, 0x23...0x5B, 0x5D...std.math.maxInt(u21) => .AlwaysValid,
+            0x22, 0x5C => .CheckForEscape,
+            else => .AlwaysInvalid,
+        };
+
+        switch (char_type) {
+            .AlwaysValid => {},
+            .AlwaysInvalid => return false,
+            .CheckForEscape => {
+                // TODO: This branch.
+            },
+        }
+    }
+
+    // TODO: Check all escapes are legal.
+
     return true;
 }
 
