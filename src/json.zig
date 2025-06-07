@@ -618,6 +618,7 @@ test "parse all test files" {
             var good_result = result catch {
                 // Failed when should have passed.
                 try diag.print(std.io.getStdErr());
+                std.debug.print("False negative: {s}\n", .{entry.name});
                 false_negative += 1;
                 continue;
             };
@@ -627,6 +628,7 @@ test "parse all test files" {
                 continue;
             };
             // Passed when should have failed.
+            std.debug.print("False positive: {s}\n", .{entry.name});
             false_positive += 1;
             defer good_result.deinit();
         }
