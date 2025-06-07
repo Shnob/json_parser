@@ -211,15 +211,19 @@ fn isJsonSymbol(char: u8) bool {
 
 /// Helper function for tokenize() to check if a quote in a string is escaped or not.
 fn isQuoteEscaped(token: std.ArrayList(u8)) bool {
+    return isStringEscaped(token.items);
+}
+
+fn isStringEscaped(string: []const u8) bool {
     // Count number of contiguous backslashes at the end of the string.
-    // If the number is odd, the quote will be escaped.
+    // If the number is odd, the next character will be escaped.
     // If even, it is not escaped.
 
     var backslash_count: u32 = 0;
 
-    var i = token.items.len - 1;
+    var i = string.len - 1;
     while (i > 0) : (i -= 1) {
-        if (token.items[i] == '\\')
+        if (string[i] == '\\')
             backslash_count += 1
         else
             break;
@@ -460,11 +464,71 @@ fn parseToken(allocator: std.mem.Allocator, token: Token, diag: *JsonDiag) !Json
 fn parseLiteral(token: Token, diag: *JsonDiag) !JsonValue {
     return JsonValue{ .primitive = switch (token.token_type) {
         .null_literal => try parseNullLiteral(token, diag),
-        .string_literal => JsonPrimitive{ .string = token.value[1 .. token.value.len - 1] },
+        .string_literal => try parseStringLiteral(token, diag),
         .bool_literal => try parseBoolLiteral(token, diag),
         .number_literal => try parseNumberLiteral(token, diag),
         else => unreachable,
     } };
+}
+
+/// Helper function for parseLiteral() to parse strings.
+fn parseStringLiteral(token: Token, diag: *JsonDiag) !JsonPrimitive {
+    const string = token.value[1 .. token.value.len - 1];
+
+    if (!checkStringValidity(string)) {
+        diag.line = token.line;
+        diag.column = token.column;
+        return JsonError.InvalidString;
+    }
+
+    return JsonPrimitive{ .string = string };
+}
+
+/// Helper function for parseStringLiteral().
+/// Checks a couple things:
+/// - All utf8 characters are valid
+/// - All escapes are legal (e.g. "\x" is not allowed)
+fn checkStringValidity(string: []const u8) bool {
+    // For proper analysis, we need to consider this as a utf8 string.
+    var utf8 = (std.unicode.Utf8View.init(string) catch {
+        // Failed to parse as utf8, string is invalid.
+        return false;
+    }).iterator();
+
+    // This value keeps track of whether we have seen an escape character.
+    var escaped = false;
+
+    // Check for illegal characters
+    while (utf8.nextCodepoint()) |c| {
+        // If the `escaped` flag is set, check that this character can legally be escaped.
+        if (escaped) switch (c) {
+            0x22, 0x5C, 0x2F, 0x62, 0x66, 0x6E, 0x72, 0x74, 0x75 => {},
+            else => return false,
+        };
+
+        const CharType = enum {
+            AlwaysValid,
+            EscapeChar,
+            AlwaysInvalid,
+        };
+
+        const char_type: CharType = switch (c) {
+            0x20...0x22, 0x23...0x5B, 0x5D...std.math.maxInt(u21) => .AlwaysValid,
+            0x5C => .EscapeChar,
+            else => .AlwaysInvalid,
+        };
+
+        switch (char_type) {
+            .AlwaysValid => escaped = false,
+            .AlwaysInvalid => return false,
+            .EscapeChar => {
+                // The escaped value flip flops if multiple escape characters appear in a row.
+                escaped = !escaped;
+            },
+        }
+    }
+
+    return true;
 }
 
 /// Helper function for parseLiteral() to parse null literals.
@@ -571,6 +635,7 @@ const JsonError = error{
     UnclosedContainer,
     InvalidNumberLiteral,
     ExpectedNameSeparator,
+    InvalidString,
 };
 
 /// Small struct to provide context in the event of an error.
