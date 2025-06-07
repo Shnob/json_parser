@@ -495,35 +495,38 @@ fn checkStringValidity(string: []const u8) bool {
         return false;
     }).iterator();
 
-    std.debug.print("\n\nChecking string: {s}\n", .{string});
+    // This value keeps track of whether we have seen an escape character.
+    var escaped = false;
 
     // Check for illegal characters
     while (utf8.nextCodepoint()) |c| {
-        // TODO: Some more nuance might be required here.
+        // If the `escaped` flag is set, check that this character can legally be escaped.
+        if (escaped) switch (c) {
+            0x22, 0x5C, 0x2F, 0x62, 0x66, 0x6E, 0x72, 0x74, 0x75 => {},
+            else => return false,
+        };
+
         const CharType = enum {
             AlwaysValid,
-            CheckForEscape,
+            EscapeChar,
             AlwaysInvalid,
         };
 
-        std.debug.print("Codepoint: {x}\n", .{c});
-
         const char_type: CharType = switch (c) {
-            0x20...0x21, 0x23...0x5B, 0x5D...std.math.maxInt(u21) => .AlwaysValid,
-            0x22, 0x5C => .CheckForEscape,
+            0x20...0x22, 0x23...0x5B, 0x5D...std.math.maxInt(u21) => .AlwaysValid,
+            0x5C => .EscapeChar,
             else => .AlwaysInvalid,
         };
 
         switch (char_type) {
-            .AlwaysValid => {},
+            .AlwaysValid => escaped = false,
             .AlwaysInvalid => return false,
-            .CheckForEscape => {
-                // TODO: This branch.
+            .EscapeChar => {
+                // The escaped value flip flops if multiple escape characters appear in a row.
+                escaped = !escaped;
             },
         }
     }
-
-    // TODO: Check all escapes are legal.
 
     return true;
 }
