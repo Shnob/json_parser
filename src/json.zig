@@ -460,11 +460,28 @@ fn parseToken(allocator: std.mem.Allocator, token: Token, diag: *JsonDiag) !Json
 fn parseLiteral(token: Token, diag: *JsonDiag) !JsonValue {
     return JsonValue{ .primitive = switch (token.token_type) {
         .null_literal => try parseNullLiteral(token, diag),
-        .string_literal => JsonPrimitive{ .string = token.value[1 .. token.value.len - 1] },
+        .string_literal => try parseStringLiteral(token, diag),
         .bool_literal => try parseBoolLiteral(token, diag),
         .number_literal => try parseNumberLiteral(token, diag),
         else => unreachable,
     } };
+}
+
+/// Helper function for parseLiteral() to parse strings.
+fn parseStringLiteral(token: Token, diag: *JsonDiag) !JsonPrimitive {
+    const string = token.value[1 .. token.value.len - 1];
+
+    if (!checkStringValidity(string)) {
+        diag.line = token.line;
+        diag.column = token.column;
+        return JsonError.InvalidString;
+    }
+
+    return JsonPrimitive{ .string = string };
+}
+
+fn checkStringValidity(_: []const u8) bool {
+    return true;
 }
 
 /// Helper function for parseLiteral() to parse null literals.
@@ -571,6 +588,7 @@ const JsonError = error{
     UnclosedContainer,
     InvalidNumberLiteral,
     ExpectedNameSeparator,
+    InvalidString,
 };
 
 /// Small struct to provide context in the event of an error.
